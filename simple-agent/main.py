@@ -1,29 +1,43 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
-from langchain.agents import initialize_agent,tool
+from mcp import ClientSession,StdioServerParameters
+from mcp.client.stdio import stdio_client
+from langchain_mcp_adapters.tools import load_mcp_tools
+from langgraph.prebuilt import create_react_agent
+import asyncio
 import os
-from langchain_community.tools import TavilySearchResults
-import datetime
+
 
 load_dotenv()
 
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash",
-                            temprature=0.7,)
-search = TavilySearchResults(search_depth = 'basic')
-
-@tool
-def currentDate(format: str = "%d-%m-%Y"):
-    """Returns the current date in the specified format."""
-    today = datetime.datetime.now()
-    formatted_date = today.strftime(format)
-    return formatted_date
-
-tools = [search, currentDate]
+                             temperature=0.7,) 
 
 
-agent = initialize_agent(tools = tools, llm = llm, agent="zero-shot-react-description", verbose=True)
+server_params = StdioServerParameters(
+    command='npx',
+    env={
+        'FIRECRAWL_API_KEY': os.getenv('FIRECRAWL_API_KEY', ''),
+    },
+    args=["firecrawl-mcp"]
+)
 
-agent.invoke("what was the last match Pakistan and India played and how many days ago it was from today?")
+async def main():
+    async with stdio_client(server_params) as (read,write):
+        async with ClientSession(read,write) as session:
+            await session.initialize()
+            tools = load_mcp_tools(session)
+            agent = create_react_agent(llm, tools, verbose=True)
 
-# result = llm.invoke("Tell me about todays weather in faisalabad")
-# print(result)
+            messages = [
+                "role":"system","content":"You are a helpful assistant that can scrape websites, crawl pages, and extract data using firecrawl tools.think step by step and use appropriate tools to get the information required to answer the user's question.",
+                ]
+
+            print("Available tools:",*[tool.name for tool in tools], sep="\n - ")
+            while True:
+                user_input = input("User: ")
+                if user_input.lower() in ['exit', 'quit']:
+                    print("Exiting...")
+                    break
+                response = await agent.arun(user_input)
+                print(f"Agent: {response}")
